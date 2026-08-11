@@ -1,52 +1,77 @@
-"""Collects upcoming remote/virtual business & startup events from
-Luma and Eventbrite, and logs them to the events_log Google Sheet tab.
+"""Collects upcoming remote/virtual startup & business events by
+scraping public pages on Luma, Eventbrite, and Meetup — none of these
+require a paid API for this. Uses each page's schema.org JSON-LD
+event data (the same structured data these sites feed to Google),
+which is far more stable to parse than raw page layout.
 Run on a schedule by GitHub Actions.
 """
-import os
 import datetime
 import requests
-from common import get_sheet, already_logged
+from common import get_sheet, already_logged, extract_jsonld_events
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; MindNoteAlertBot/1.0; "
+                  "+https://github.com/Temm2/mindnote-alert-pipeline)"
+}
+
+# Curated public calendars/pages known to carry startup & remote-friendly events.
+# Add or swap URLs here any time without touching the parsing logic.
+LUMA_CALENDARS = [
+    "https://luma.com/buildercommunityanz",
+    "https://luma.com/cursorcommunity",
+    "https://luma.com/deepmind",
+]
+EVENTBRITE_PAGES = [
+    "https://www.eventbrite.com/d/online/startup-meetup/",
+    "https://www.eventbrite.com/d/online/business-networking/",
+]
+MEETUP_PAGES = [
+    "https://www.meetup.com/topics/business-startup/us/",
+    "https://www.meetup.com/topics/founders/us/",
+]
+
+
+def fetch_page(url: str) -> str:
+    resp = requests.get(url, headers=HEADERS, timeout=30)
+    resp.raise_for_status()
+    return resp.text
 
 
 def fetch_luma():
-    key = os.environ.get("LUMA_API_KEY")
-    if not key:
-        return []
-    resp = requests.get(
-        "https://public-api.lu.ma/v1/calendar/list-events",
-        headers={"x-luma-api-key": key},
-        params={"category": "business,tech,startup"},
-        timeout=30,
-    )
-    resp.raise_for_status()
-    items = []
-    for entry in resp.json().get("entries", []):
-        ev = entry["event"]
-        items.append({"name": ev["name"], "when": ev["start_at"], "link": f"https://lu.ma/{ev['url']}"})
-    return items
+    events = []
+    for url in LUMA_CALENDARS:
+        try:
+            html = fetch_page(url)
+            events += extract_jsonld_events(html, url)
+        except requests.RequestException as e:
+            print(f"Luma fetch failed for {url}: {e}")
+    return events
 
 
 def fetch_eventbrite():
-    token = os.environ.get("EVENTBRITE_TOKEN")
-    if not token:
-        return []
-    resp = requests.get(
-        "https://www.eventbriteapi.com/v3/events/search/",
-        headers={"Authorization": f"Bearer {token}"},
-        params={"q": "startup founders networking", "online_event": "true", "sort_by": "date"},
-        timeout=30,
-    )
-    resp.raise_for_status()
-    items = []
-    for ev in resp.json().get("events", []):
-        if not ev.get("online_event"):
-            continue
-        items.append({"name": ev["name"]["text"], "when": ev["start"]["utc"], "link": ev["url"]})
-    return items
+    events = []
+    for url in EVENTBRITE_PAGES:
+        try:
+            html = fetch_page(url)
+            events += extract_jsonld_events(html, url)
+        except requests.RequestException as e:
+            print(f"Eventbrite fetch failed for {url}: {e}")
+    return events
+
+
+def fetch_meetup():
+    events = []
+    for url in MEETUP_PAGES:
+        try:
+            html = fetch_page(url)
+            events += extract_jsonld_events(html, url)
+        except requests.RequestException as e:
+            print(f"Meetup fetch failed for {url}: {e}")
+    return events
 
 
 def main():
-    events = fetch_luma() + fetch_eventbrite()
+    events = fetch_luma() + fetch_eventbrite() + fetch_meetup()
     print(f"Collected {len(events)} candidate events")
 
     sheet = get_sheet("events_log")
@@ -59,7 +84,7 @@ def main():
         sheet.append_row([today, ev["name"], ev["when"], ev["link"], "no"])
         logged += 1
 
-    print(f"Logged {logged} events")
+    print(f"Logged {logged} new events")
 
 
 if __name__ == "__main__":

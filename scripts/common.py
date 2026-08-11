@@ -3,6 +3,7 @@ All secrets come from environment variables, set as GitHub Actions
 repo secrets (see README-github-actions-setup.md).
 """
 import os
+import re
 import json
 import requests
 import gspread
@@ -68,6 +69,39 @@ def already_logged(sheet, value: str, column: str = "company") -> bool:
     records = sheet.get_all_records()
     value_lower = value.strip().lower()
     return any(r.get(column, "").strip().lower() == value_lower for r in records[-200:])
+
+
+def extract_jsonld_events(html: str, base_url: str) -> list:
+    """Pull schema.org Event entries out of a page's JSON-LD blocks.
+    Event platforms embed this structured data for Google's search
+    results, so it's a far more stable scrape target than visual
+    HTML/CSS, which changes on every redesign."""
+    events = []
+    for block in re.findall(
+        r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+        html, re.DOTALL | re.IGNORECASE,
+    ):
+        try:
+            data = json.loads(block.strip())
+        except json.JSONDecodeError:
+            continue
+        candidates = data if isinstance(data, list) else [data]
+        for item in candidates:
+            if not isinstance(item, dict):
+                continue
+            # Some sites nest events inside an ItemList
+            nested = item.get("itemListElement", [])
+            pool = [item] + [n.get("item", n) for n in nested if isinstance(n, dict)]
+            for node in pool:
+                if not isinstance(node, dict):
+                    continue
+                if node.get("@type") in ("Event", "BusinessEvent", "SocialEvent", "EducationEvent"):
+                    name = node.get("name")
+                    start = node.get("startDate")
+                    url = node.get("url") or base_url
+                    if name and start:
+                        events.append({"name": name, "when": start, "link": url})
+    return events
 
 
 def send_telegram(message: str):

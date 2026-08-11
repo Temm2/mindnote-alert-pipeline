@@ -216,6 +216,7 @@ def main():
     sheet = get_sheet("b2b_log")
     today = datetime.date.today().isoformat()
     logged = 0
+    debug_shown = 0
 
     for item in candidates:
         try:
@@ -223,6 +224,9 @@ def main():
         except Exception as e:
             print(f"Classification failed for one item, skipping: {e}")
             continue
+        if debug_shown < 5:
+            print(f"DEBUG sample [{item['source']}]: text={item['text'][:100]!r} -> result={result}")
+            debug_shown += 1
         if not result.get("match"):
             continue
         company = result.get("company", "").strip()
@@ -230,7 +234,6 @@ def main():
             continue
         sheet.append_row([today, company, result.get("seeking", ""), item["url"], "no"])
         logged += 1
-
     print(f"Logged {logged} new matches")
 
 

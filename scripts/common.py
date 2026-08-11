@@ -57,9 +57,22 @@ def classify_with_claude(source: str, url: str, text: str) -> dict:
     )
     resp.raise_for_status()
     raw = resp.json()["content"][0]["text"]
+    # Claude sometimes wraps JSON in markdown code fences even when told
+    # not to — strip those before parsing, and fall back to extracting
+    # the first {...} block if there's any other stray text around it.
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned, flags=re.MULTILINE).strip()
     try:
-        return json.loads(raw)
+        return json.loads(cleaned)
     except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except json.JSONDecodeError:
+                pass
+        print(f"Could not parse classification response, treating as no-match. Raw: {raw[:200]}")
         return {"match": False}
 
 

@@ -46,7 +46,7 @@ def classify_with_claude(source: str, url: str, text: str) -> dict:
             "content-type": "application/json",
         },
         json={
-            "model": "claude-sonnet-4-6",
+            "model": "claude-sonnet-5",
             "max_tokens": 300,
             "system": CLASSIFY_SYSTEM_PROMPT,
             "messages": [

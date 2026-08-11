@@ -1,0 +1,80 @@
+"""Shared helpers used by all collector/sender scripts.
+All secrets come from environment variables, set as GitHub Actions
+repo secrets (see README-github-actions-setup.md).
+"""
+import os
+import json
+import requests
+import gspread
+from google.oauth2.service_account import Credentials
+
+SHEET_ID = os.environ["SHEET_ID"]
+ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
+
+CLASSIFY_SYSTEM_PROMPT = """You are a strict classifier for a B2B lead-alert system. Decide whether the text contains an EXPLICIT statement that a specific, named company or founder is currently seeking a specific product, service, vendor, or partner.
+
+Rules:
+- The company/founder must be identifiable, not a vague "we".
+- The ask must be specific enough to act on (e.g. "a fractional CFO", not "always looking to connect").
+- General employee hiring posts do NOT qualify.
+- Sarcasm, jokes, hypotheticals, or past-tense stories do NOT qualify.
+
+Respond with ONLY valid JSON, nothing else:
+{"match": true, "company": "...", "seeking": "..."} or {"match": false}
+"""
+
+
+def get_sheet(tab_name: str):
+    """Return a gspread worksheet handle for the given tab."""
+    creds_json = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
+    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+    creds = Credentials.from_service_account_info(creds_json, scopes=scopes)
+    client = gspread.authorize(creds)
+    return client.open_by_key(SHEET_ID).worksheet(tab_name)
+
+
+def classify_with_claude(source: str, url: str, text: str) -> dict:
+    """Ask Claude whether this text is an explicit 'X looking for Y' ask."""
+    resp = requests.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        json={
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 300,
+            "system": CLASSIFY_SYSTEM_PROMPT,
+            "messages": [
+                {"role": "user", "content": f"Source: {source}\nURL: {url}\nText: {text}"}
+            ],
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    raw = resp.json()["content"][0]["text"]
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return {"match": False}
+
+
+def already_logged(sheet, value: str, column: str = "company") -> bool:
+    """Simple lookback dedupe: has this value already been logged in
+    the given column? Checks the last 200 rows for speed."""
+    records = sheet.get_all_records()
+    value_lower = value.strip().lower()
+    return any(r.get(column, "").strip().lower() == value_lower for r in records[-200:])
+
+
+def send_telegram(message: str):
+    if not message.strip():
+        return
+    requests.post(
+        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+        json={"chat_id": TELEGRAM_CHAT_ID, "text": message},
+        timeout=30,
+    ).raise_for_status()

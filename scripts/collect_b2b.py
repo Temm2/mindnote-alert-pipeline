@@ -1,22 +1,38 @@
 """Collects candidate 'X is looking for Y' posts from free sources,
 classifies each with Claude, and logs confirmed matches to the
 b2b_log Google Sheet tab. Run on a schedule by GitHub Actions.
+
+Sources: Reddit, Product Hunt, Indie Hackers, Hacker News, Bluesky,
+Mastodon, StackShare, BetaList. Each fetch_* function is isolated —
+if one source fails or a site changes its layout, the rest still run.
 """
 import os
+import re
 import datetime
 import feedparser
 import requests
 from common import get_sheet, classify_with_claude, already_logged
 
 QUERY = '"looking for a" OR "anyone recommend" OR "need a"'
-SUBREDDITS = "startups+Entrepreneur+SaaS+smallbusiness"
+SUBREDDITS = "startups+Entrepreneur+SaaS+smallbusiness+msp+sysadmin+forhire"
+REDDIT_UA = "python:mindnote-alert-bot:v1.0 (by /u/mindnote_bot)"
+
+MASTODON_TARGETS = [
+    ("mastodon.social", "startup"),
+    ("mastodon.social", "SaaS"),
+    ("indieweb.social", "buildinpublic"),
+]
+BETALIST_PAGES = [
+    "https://betalist.com/browse/other/startups",
+    "https://betalist.com/",
+]
 
 
 def fetch_reddit():
     resp = requests.get(
         f"https://www.reddit.com/r/{SUBREDDITS}/search.json",
         params={"q": QUERY, "sort": "new", "restrict_sr": "on", "t": "day"},
-        headers={"User-Agent": "python:mindnote-alert-bot:v1.0 (by /u/mindnote_bot)"},
+        headers={"User-Agent": REDDIT_UA},
         timeout=30,
     )
     resp.raise_for_status()
@@ -35,11 +51,11 @@ def fetch_product_hunt():
     token = os.environ.get("PRODUCTHUNT_TOKEN")
     if not token:
         return []
-    yesterday = (datetime.datetime.utcnow() - datetime.timedelta(days=1)).isoformat()
+    since = (datetime.datetime.utcnow() - datetime.timedelta(days=4)).isoformat()
     query = """
     { posts(order: NEWEST, postedAfter: "%s") {
         edges { node { name tagline url comments(first: 5) { edges { node { body } } } } }
-    } }""" % yesterday
+    } }""" % since
     resp = requests.post(
         "https://api.producthunt.com/v2/api/graphql",
         headers={"Authorization": f"Bearer {token}"},
@@ -67,21 +83,146 @@ def fetch_indie_hackers():
     ]
 
 
+def fetch_hacker_news():
+    """Uses Algolia's official free HN Search API, no key required."""
+    items = []
+    cutoff = int(datetime.datetime.utcnow().timestamp()) - 86400 * 2
+    for query in ("looking for a", "seeking freelancer"):
+        resp = requests.get(
+            "https://hn.algolia.com/api/v1/search_by_date",
+            params={"query": query, "tags": "story", "numericFilters": f"created_at_i>{cutoff}"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        for hit in resp.json().get("hits", []):
+            title = hit.get("title") or ""
+            items.append({
+                "source": "hackernews",
+                "text": f"{title} {hit.get('story_text') or ''}",
+                "url": hit.get("url") or f"https://news.ycombinator.com/item?id={hit.get('objectID')}",
+            })
+    return items
+
+
+def fetch_bluesky():
+    """Needs a free Bluesky app password (not a paid key)."""
+    handle = os.environ.get("BLUESKY_HANDLE")
+    app_password = os.environ.get("BLUESKY_APP_PASSWORD")
+    if not handle or not app_password:
+        return []
+    auth = requests.post(
+        "https://bsky.social/xrpc/com.atproto.server.createSession",
+        json={"identifier": handle, "password": app_password},
+        timeout=30,
+    )
+    auth.raise_for_status()
+    token = auth.json()["accessJwt"]
+
+    items = []
+    for query in ('"looking for a"', '"need a" vendor OR partner OR tool'):
+        resp = requests.get(
+            "https://bsky.social/xrpc/app.bsky.feed.searchPosts",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"q": query, "limit": 25, "sort": "latest"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        for post in resp.json().get("posts", []):
+            text = post.get("record", {}).get("text", "")
+            uri = post.get("uri", "")
+            handle_part = post.get("author", {}).get("handle", "")
+            post_id = uri.split("/")[-1] if uri else ""
+            items.append({
+                "source": "bluesky",
+                "text": text,
+                "url": f"https://bsky.app/profile/{handle_part}/post/{post_id}" if post_id else "https://bsky.app",
+            })
+    return items
+
+
+def fetch_mastodon():
+    items = []
+    for instance, hashtag in MASTODON_TARGETS:
+        resp = requests.get(
+            f"https://{instance}/api/v1/timelines/tag/{hashtag}",
+            params={"limit": 20},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        for status in resp.json():
+            text = re.sub(r"<[^>]+>", " ", status.get("content", ""))
+            items.append({
+                "source": "mastodon",
+                "text": text,
+                "url": status.get("url", f"https://{instance}"),
+            })
+    return items
+
+
+def fetch_stackshare():
+    """Best-effort scrape of StackShare's public feed. StackShare is a
+    small/declining platform so expect low volume; this is a long-tail
+    source, not a primary one."""
+    resp = requests.get("https://stackshare.io/feed", timeout=30,
+                         headers={"User-Agent": "Mozilla/5.0 (compatible; MindNoteAlertBot/1.0)"})
+    resp.raise_for_status()
+    html = resp.text
+    items = []
+    for m in re.finditer(r'href="(/companies/[^"]+)"[^>]*>([^<]{5,120})<', html):
+        path, text = m.groups()
+        items.append({
+            "source": "stackshare",
+            "text": text.strip(),
+            "url": f"https://stackshare.io{path}",
+        })
+    return items[:30]
+
+
+def fetch_betalist():
+    items = []
+    for url in BETALIST_PAGES:
+        resp = requests.get(url, timeout=30,
+                             headers={"User-Agent": "Mozilla/5.0 (compatible; MindNoteAlertBot/1.0)"})
+        resp.raise_for_status()
+        html = resp.text
+        for m in re.finditer(r'/startups/([a-z0-9\-]+)"[^>]*>\s*([^<]{2,60})<.*?<p[^>]*>([^<]{5,160})<',
+                              html, re.DOTALL):
+            slug, name, tagline = m.groups()
+            items.append({
+                "source": "betalist",
+                "text": f"{name.strip()} - {tagline.strip()}",
+                "url": f"https://betalist.com/startups/{slug}",
+            })
+    return items[:30]
+
+
 def main():
+    sources = (
+        fetch_reddit, fetch_product_hunt, fetch_indie_hackers,
+        fetch_hacker_news, fetch_bluesky, fetch_mastodon,
+        fetch_stackshare, fetch_betalist,
+    )
     candidates = []
-    for fetch_fn in (fetch_reddit, fetch_product_hunt, fetch_indie_hackers):
+    for fetch_fn in sources:
         try:
-            candidates += fetch_fn()
-        except requests.RequestException as e:
+            found = fetch_fn()
+            print(f"{fetch_fn.__name__}: {len(found)} candidates")
+            candidates += found
+        except Exception as e:
             print(f"{fetch_fn.__name__} failed, skipping this source: {e}")
-    print(f"Collected {len(candidates)} raw candidates")
+
+    print(f"Collected {len(candidates)} raw candidates total")
 
     sheet = get_sheet("b2b_log")
     today = datetime.date.today().isoformat()
     logged = 0
 
     for item in candidates:
-        result = classify_with_claude(item["source"], item["url"], item["text"])
+        try:
+            result = classify_with_claude(item["source"], item["url"], item["text"])
+        except Exception as e:
+            print(f"Classification failed for one item, skipping: {e}")
+            continue
         if not result.get("match"):
             continue
         company = result.get("company", "").strip()

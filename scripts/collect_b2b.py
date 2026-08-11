@@ -16,7 +16,7 @@ def fetch_reddit():
     resp = requests.get(
         f"https://www.reddit.com/r/{SUBREDDITS}/search.json",
         params={"q": QUERY, "sort": "new", "restrict_sr": "on", "t": "day"},
-        headers={"User-Agent": "mindnote-alert-bot/1.0"},
+        headers={"User-Agent": "python:mindnote-alert-bot:v1.0 (by /u/mindnote_bot)"},
         timeout=30,
     )
     resp.raise_for_status()
@@ -68,7 +68,12 @@ def fetch_indie_hackers():
 
 
 def main():
-    candidates = fetch_reddit() + fetch_product_hunt() + fetch_indie_hackers()
+    candidates = []
+    for fetch_fn in (fetch_reddit, fetch_product_hunt, fetch_indie_hackers):
+        try:
+            candidates += fetch_fn()
+        except requests.RequestException as e:
+            print(f"{fetch_fn.__name__} failed, skipping this source: {e}")
     print(f"Collected {len(candidates)} raw candidates")
 
     sheet = get_sheet("b2b_log")

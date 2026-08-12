@@ -76,11 +76,29 @@ def fetch_product_hunt():
 
 
 def fetch_indie_hackers():
-    feed = feedparser.parse("https://www.indiehackers.com/starting-up/looking-for.rss")
-    return [
-        {"source": "indiehackers", "text": f"{e.title} {e.get('summary','')}", "url": e.link}
-        for e in feed.entries
-    ]
+    """The old RSS URL this used to hit doesn't actually exist — it
+    silently redirected to the homepage and returned 0 items every
+    run. The real, live source is Indie Hackers' public 'Partner Up'
+    group page, which is full of genuine 'looking for X' posts and
+    needs no login."""
+    resp = requests.get(
+        "https://www.indiehackers.com/group/looking-to-partner-up",
+        timeout=30,
+        headers={"User-Agent": "Mozilla/5.0 (compatible; MindNoteAlertBot/1.0)"},
+    )
+    resp.raise_for_status()
+    html = resp.text
+    items = []
+    seen_urls = set()
+    for m in re.finditer(r'href="(/post/[a-f0-9]+)"[^>]*>([^<]{5,150})<', html):
+        path, title = m.groups()
+        title = re.sub(r"\s*\d+[dhwm]$", "", title).strip()
+        url = f"https://www.indiehackers.com{path}"
+        if url in seen_urls or not title:
+            continue
+        seen_urls.add(url)
+        items.append({"source": "indiehackers", "text": title, "url": url})
+    return items
 
 
 def fetch_hacker_news():

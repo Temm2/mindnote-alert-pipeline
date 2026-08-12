@@ -220,7 +220,8 @@ def main():
 
     for item in candidates:
         try:
-            result = classify_with_claude(item["source"], item["url"], item["text"])
+            result = classify_with_claude(
+                item.get("source", "unknown"), item.get("url", ""), item.get("text", ""))
         except Exception as e:
             print(f"Classification failed for one item, skipping: {e}")
             continue

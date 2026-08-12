@@ -92,6 +92,8 @@ def fetch_indie_hackers():
     seen_urls = set()
     for m in re.finditer(r'href="(/post/[a-f0-9]+)"[^>]*>([^<]{5,150})<', html):
         path, title = m.groups()
+        # Strip trailing relative-age markers like "2d" / "3m" that
+        # sit right after the title text in the link.
         title = re.sub(r"\s*\d+[dhwm]$", "", title).strip()
         url = f"https://www.indiehackers.com{path}"
         if url in seen_urls or not title:
@@ -177,6 +179,42 @@ def fetch_mastodon():
     return items
 
 
+def fetch_x_twitter():
+    """Uses TwitterAPI.io (a paid, low-cost third-party service — see
+    README) to search X/Twitter for explicit asks. Not free like the
+    other sources, but cheap: ~$0.15 per 1,000 tweets read."""
+    api_key = os.environ.get("TWITTERAPI_IO_KEY")
+    if not api_key:
+        return []
+
+    items = []
+    queries = [
+        '"looking for a" (agency OR vendor OR partner OR consultant) -filter:retweets',
+        '"currently looking for" -filter:retweets',
+    ]
+    for query in queries:
+        resp = requests.get(
+            "https://api.twitterapi.io/twitter/tweet/advanced_search",
+            params={"query": query, "queryType": "Latest"},
+            headers={"X-API-Key": api_key},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        tweets = data.get("tweets", data.get("data", []))
+        for t in tweets:
+            text = t.get("text", "")
+            tweet_id = t.get("id") or t.get("id_str", "")
+            author = t.get("author", {}) or {}
+            username = author.get("userName") or author.get("username", "")
+            url = t.get("url") or (
+                f"https://x.com/{username}/status/{tweet_id}" if username and tweet_id else ""
+            )
+            if text and url:
+                items.append({"source": "x_twitter", "text": text, "url": url})
+    return items
+
+
 def fetch_stackshare():
     """Best-effort scrape of StackShare's public feed. StackShare is a
     small/declining platform so expect low volume; this is a long-tail
@@ -218,7 +256,7 @@ def main():
     sources = (
         fetch_reddit, fetch_product_hunt, fetch_indie_hackers,
         fetch_hacker_news, fetch_bluesky, fetch_mastodon,
-        fetch_stackshare, fetch_betalist,
+        fetch_stackshare, fetch_betalist, fetch_x_twitter,
     )
     candidates = []
     for fetch_fn in sources:
@@ -253,6 +291,7 @@ def main():
             continue
         sheet.append_row([today, company, result.get("seeking", ""), item["url"], "no"])
         logged += 1
+
     print(f"Logged {logged} new matches")
 
 

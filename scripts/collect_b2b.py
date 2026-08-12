@@ -88,11 +88,10 @@ def fetch_indie_hackers():
     )
     resp.raise_for_status()
     html = resp.text
+    print(f"DEBUG indiehackers: got {len(html)} chars, status {resp.status_code}, "
+          f"contains '/post/': {'/post/' in html}, snippet: {html[:300]!r}")
     items = []
     seen_urls = set()
-    # Capture everything between the opening and closing <a> tag rather
-    # than assuming plain text sits immediately after the opening tag —
-    # the real markup may nest a <span> or similar around the title.
     for m in re.finditer(r'href="(/post/[a-zA-Z0-9\-_]+)"[^>]*>(.*?)</a>', html, re.DOTALL):
         path, raw_title = m.groups()
         title = re.sub(r"<[^>]+>", " ", raw_title)  # strip any nested tags

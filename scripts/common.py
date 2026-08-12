@@ -117,11 +117,12 @@ def extract_jsonld_events(html: str, base_url: str) -> list:
     return events
 
 
-def send_telegram(message: str):
+def send_telegram(message: str, chat_id: str = None):
     if not message.strip():
         return
+    target = chat_id or TELEGRAM_CHAT_ID
     requests.post(
         f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-        json={"chat_id": TELEGRAM_CHAT_ID, "text": message},
+        json={"chat_id": target, "text": message},
         timeout=30,
     ).raise_for_status()

@@ -90,11 +90,14 @@ def fetch_indie_hackers():
     html = resp.text
     items = []
     seen_urls = set()
-    for m in re.finditer(r'href="(/post/[a-f0-9]+)"[^>]*>([^<]{5,150})<', html):
-        path, title = m.groups()
-        # Strip trailing relative-age markers like "2d" / "3m" that
-        # sit right after the title text in the link.
-        title = re.sub(r"\s*\d+[dhwm]$", "", title).strip()
+    # Capture everything between the opening and closing <a> tag rather
+    # than assuming plain text sits immediately after the opening tag —
+    # the real markup may nest a <span> or similar around the title.
+    for m in re.finditer(r'href="(/post/[a-zA-Z0-9\-_]+)"[^>]*>(.*?)</a>', html, re.DOTALL):
+        path, raw_title = m.groups()
+        title = re.sub(r"<[^>]+>", " ", raw_title)  # strip any nested tags
+        title = re.sub(r"\s+", " ", title).strip()
+        title = re.sub(r"\s*\d+[dhwm]$", "", title).strip()  # trailing "2d" / "3m" age markers
         url = f"https://www.indiehackers.com{path}"
         if url in seen_urls or not title:
             continue
@@ -185,6 +188,7 @@ def fetch_x_twitter():
     other sources, but cheap: ~$0.15 per 1,000 tweets read."""
     api_key = os.environ.get("TWITTERAPI_IO_KEY")
     if not api_key:
+        print("TWITTERAPI_IO_KEY not set, skipping X/Twitter source.")
         return []
 
     items = []

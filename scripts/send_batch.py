@@ -22,7 +22,7 @@ def format_b2b_row(row: dict) -> str:
 
 
 def format_submission_row(row: dict) -> str:
-    line = f"🤝 {row['company']} is looking for {row['seeking']}"
+    line = f"🤝 {row.get('company','')} is looking for {row.get('seeking','')}"
     if row.get("offering"):
         line += f", offering {row['offering']}"
     if row.get("link"):
@@ -41,14 +41,29 @@ def format_event_row(row: dict) -> str:
 
 def get_approved_submissions():
     """Rows from b2b_submissions where a human has set approved=yes.
-    Returns (row_number, row_dict) pairs, same shape as the other tabs."""
+    Tally auto-generates its own headers (capitalization, extra
+    metadata columns) so this matches column names case-insensitively
+    and finds the real position of 'approved' rather than assuming a
+    fixed column number.
+    Returns (sheet, approved_col_index, [(row_number, normalized_row_dict), ...])."""
     sheet = get_sheet(SUBMISSIONS_TAB)
-    records = sheet.get_all_records()
-    approved = [
-        (i + 2, r) for i, r in enumerate(records)
-        if str(r.get("approved", "")).strip().lower() == "yes"
-    ]
-    return sheet, approved
+    header_row = sheet.row_values(1)
+    header_lower = [h.strip().lower() for h in header_row]
+
+    if "approved" not in header_lower:
+        print("Warning: no 'approved' column found in b2b_submissions, skipping submissions.")
+        return sheet, None, []
+    approved_col_index = header_lower.index("approved") + 1  # 1-indexed for update_cell
+
+    all_values = sheet.get_all_values()[1:]  # skip header row
+    approved = []
+    for i, row_values in enumerate(all_values):
+        # Build a lowercase-keyed dict so 'Company' -> 'company', etc.
+        record = {header_lower[j]: (row_values[j] if j < len(row_values) else "")
+                  for j in range(len(header_lower))}
+        if record.get("approved", "").strip().lower() == "yes":
+            approved.append((i + 2, record))
+    return sheet, approved_col_index, approved
 
 
 def main():
@@ -66,8 +81,9 @@ def main():
     queue = [("log", rn, r) for rn, r in unposted_rows]
 
     submissions_sheet = None
+    approved_col_index = None
     if kind == "b2b":
-        submissions_sheet, approved_submissions = get_approved_submissions()
+        submissions_sheet, approved_col_index, approved_submissions = get_approved_submissions()
         queue += [("submission", rn, r) for rn, r in approved_submissions]
 
     cap = MAX_PER_BATCH[kind]
@@ -96,7 +112,7 @@ def main():
         if source == "log":
             sheet.update_cell(row_number, 5, "yes")  # 'posted' is column E
         else:
-            submissions_sheet.update_cell(row_number, 6, "sent")  # 'approved' is column F
+            submissions_sheet.update_cell(row_number, approved_col_index, "sent")
 
     print(f"Sent {len(queue)} items")
 

@@ -60,7 +60,16 @@ def classify_with_claude(source: str, url: str, text: str) -> dict:
         timeout=30,
     )
     resp.raise_for_status()
-    raw = resp.json()["content"][0]["text"]
+    response_json = resp.json()
+    content_blocks = response_json.get("content", [])
+    raw = ""
+    for block in content_blocks:
+        if block.get("type") == "text" and "text" in block:
+            raw = block["text"]
+            break
+    if not raw:
+        print(f"Unexpected Claude response shape, treating as no-match: {response_json}")
+        return {"match": False}
     # Claude sometimes wraps JSON in markdown code fences even when told
     # not to — strip those before parsing, and fall back to extracting
     # the first {...} block if there's any other stray text around it.

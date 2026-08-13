@@ -59,7 +59,9 @@ def classify_with_claude(source: str, url: str, text: str) -> dict:
         },
         timeout=30,
     )
-    resp.raise_for_status()
+    if not resp.ok:
+        raise requests.HTTPError(
+            f"{resp.status_code} error from Anthropic API: {resp.text[:500]}")
     response_json = resp.json()
     content_blocks = response_json.get("content", [])
     raw = ""

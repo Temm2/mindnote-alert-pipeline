@@ -8,6 +8,7 @@ if one source fails or a site changes its layout, the rest still run.
 """
 import os
 import re
+import time
 import datetime
 import feedparser
 import requests
@@ -195,7 +196,9 @@ def fetch_x_twitter():
         '"looking for a" (agency OR vendor OR partner OR consultant) -filter:retweets',
         '"currently looking for" -filter:retweets',
     ]
-    for query in queries:
+    for i, query in enumerate(queries):
+        if i > 0:
+            time.sleep(6)  # free/bonus tier is ~0.2 QPS — stay under that
         resp = requests.get(
             "https://api.twitterapi.io/twitter/tweet/advanced_search",
             params={"query": query, "queryType": "Latest"},

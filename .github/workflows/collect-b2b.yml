@@ -2,7 +2,7 @@ name: Collect B2B Opportunities
 
 on:
   schedule:
-    - cron: "0 */4 * * *"   # every 4 hours, UTC
+        - cron: "0 10 * * *"   # once daily at 10:00 UTC, before the first send batch
   workflow_dispatch: {}       # lets you click "Run workflow" manually to test
 
 jobs:

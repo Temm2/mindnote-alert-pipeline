@@ -5,6 +5,7 @@ repo secrets (see README-github-actions-setup.md).
 import os
 import re
 import json
+import time
 import requests
 import gspread
 from google.oauth2.service_account import Credentials
@@ -37,13 +38,24 @@ Respond with ONLY valid JSON, nothing else:
 """
 
 
-def get_sheet(tab_name: str):
-    """Return a gspread worksheet handle for the given tab."""
+def get_sheet(tab_name: str, max_retries: int = 3):
+    """Return a gspread worksheet handle, retrying on transient Google errors."""
     creds_json = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
     scopes = ["https://www.googleapis.com/auth/spreadsheets"]
     creds = Credentials.from_service_account_info(creds_json, scopes=scopes)
     client = gspread.authorize(creds)
-    return client.open_by_key(SHEET_ID).worksheet(tab_name)
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            return client.open_by_key(SHEET_ID).worksheet(tab_name)
+        except gspread.exceptions.APIError as e:
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if status in (500, 502, 503, 429) and attempt < max_retries - 1:
+                time.sleep(5 * (attempt + 1))
+                last_error = e
+                continue
+            raise
+    raise last_error
 
 
 def classify_with_claude(source: str, url: str, text: str, system_prompt: str = None) -> dict:
